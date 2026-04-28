@@ -1,0 +1,15 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Backend" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="com.fitnesspro.api.BackendServer" />
+    <module name="DS Final Project" />
+    <extension name="coverage">
+      <pattern>
+        <option name="PATTERN" value="com.fitnesspro.api.*" />
+        <option name="ENABLED" value="true" />
+      </pattern>
+    </extension>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
