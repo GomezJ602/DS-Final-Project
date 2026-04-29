@@ -6,6 +6,10 @@ import com.fitnesspro.logic.*;
 import com.fitnesspro.model.Exercise;
 import java.io.*;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -29,7 +33,15 @@ public class BackendServer {
      * @throws IOException If the server fails to start
      */
     public static void main(String[] args) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+        int port = 8080;
+        HttpServer server;
+        try {
+            server = HttpServer.create(new InetSocketAddress(port), 0);
+        } catch (java.net.BindException e) {
+            System.err.println("Port " + port + " is already in use. Is another instance of the server running?");
+            System.err.println("Kill the existing process or change the port and restart.");
+            throw e;
+        }
 
         // GET all exercises (Library - HashMap)
         server.createContext("/api/exercises", exchange -> {
@@ -123,6 +135,49 @@ public class BackendServer {
             }
         });
 
+        // POST AI workout plan (Groq API proxy)
+        server.createContext("/api/ai/workout-plan", exchange -> {
+            configureCors(exchange);
+            if ("OPTIONS".equals(exchange.getRequestMethod())) return;
+            if ("POST".equals(exchange.getRequestMethod())) {
+                try {
+                    String body = new String(exchange.getRequestBody().readAllBytes(), "UTF-8");
+                    String height = extractJsonStringValue(body, "height");
+                    String weight = extractJsonStringValue(body, "weight");
+                    String goals = extractJsonStringValue(body, "goals");
+
+                    String apiKey = System.getenv("GROQ_API_KEY");
+                    if (apiKey == null || apiKey.isEmpty()) {
+                        sendJsonResponse(exchange, "{\"error\":\"GROQ_API_KEY not set\"}", 500);
+                        return;
+                    }
+
+                    String systemPrompt = "You are an expert personal fitness coach. Given a user's stats and goals, create a personalized workout plan. Respond ONLY with valid JSON in this exact format, with no markdown or extra text: {\"title\": \"program name here\", \"workout\": \"detailed workout routine description here\", \"nutrition\": \"nutrition guidance here\", \"classes\": \"recommended class types here\", \"circuit\": [{\"name\": \"Exercise 1\", \"muscle\": \"Target Muscle\", \"sets\": 3, \"reps\": \"8-12\"}, {\"name\": \"Exercise 2\", \"muscle\": \"Target Muscle\", \"sets\": 3, \"reps\": \"8-12\"}, {\"name\": \"Exercise 3\", \"muscle\": \"Target Muscle\", \"sets\": 3, \"reps\": \"8-12\"}, {\"name\": \"Exercise 4\", \"muscle\": \"Target Muscle\", \"sets\": 3, \"reps\": \"8-12\"}, {\"name\": \"Exercise 5\", \"muscle\": \"Target Muscle\", \"sets\": 3, \"reps\": \"8-12\"}, {\"name\": \"Exercise 6\", \"muscle\": \"Target Muscle\", \"sets\": 3, \"reps\": \"8-12\"}]}. The circuit array must contain exactly 6 exercises tailored to the user's goals. For cardio or flexibility exercises use a time-based reps format like '30 sec' or '1 min'. Keep sets between 2-4 based on intensity.";
+                    String userMessage = "Height: " + height + ", Weight: " + weight + " lbs\nGoals: " + goals;
+
+                    String requestBody = "{\"model\":\"llama-3.3-70b-versatile\",\"max_tokens\":1024," +
+                        "\"messages\":[" +
+                        "{\"role\":\"system\",\"content\":" + toJsonString(systemPrompt) + "}," +
+                        "{\"role\":\"user\",\"content\":" + toJsonString(userMessage) + "}" +
+                        "]}";
+
+                    HttpClient client = HttpClient.newHttpClient();
+                    HttpRequest apiRequest = HttpRequest.newBuilder()
+                        .uri(URI.create("https://api.groq.com/openai/v1/chat/completions"))
+                        .header("Content-Type", "application/json")
+                        .header("Authorization", "Bearer " + apiKey)
+                        .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                        .build();
+
+                    HttpResponse<String> apiResponse = client.send(apiRequest, HttpResponse.BodyHandlers.ofString());
+                    String planJson = extractGroqText(apiResponse.body());
+                    sendJsonResponse(exchange, planJson);
+                } catch (Exception e) {
+                    sendJsonResponse(exchange, "{\"error\":\"" + e.getMessage().replace("\"", "'") + "\"}", 500);
+                }
+            }
+        });
+
         System.out.println("Java Logic Server started on port 8080...");
         server.start();
     }
@@ -190,5 +245,56 @@ public class BackendServer {
         OutputStream os = exchange.getResponseBody();
         os.write(response);
         os.close();
+    }
+
+    private static String toJsonString(String s) {
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t") + "\"";
+    }
+
+    private static String extractJsonStringValue(String json, String key) {
+        String search = "\"" + key + "\"";
+        int keyIdx = json.indexOf(search);
+        if (keyIdx == -1) return "";
+        int colonIdx = json.indexOf(":", keyIdx + search.length());
+        if (colonIdx == -1) return "";
+        int quoteStart = json.indexOf("\"", colonIdx + 1);
+        if (quoteStart == -1) return "";
+        int i = quoteStart + 1;
+        StringBuilder sb = new StringBuilder();
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == '\\' && i + 1 < json.length()) { sb.append(json.charAt(i + 1)); i += 2; continue; }
+            if (c == '"') break;
+            sb.append(c);
+            i++;
+        }
+        return sb.toString();
+    }
+
+    private static String extractGroqText(String responseBody) {
+        // Extract text from Groq response: {"choices":[{"message":{"content":"..."}},...]}
+        int choicesIdx = responseBody.indexOf("\"choices\":");
+        if (choicesIdx == -1) return "{\"error\":\"No choices in response\"}";
+        String contentKey = "\"content\":\"";
+        int contentIdx = responseBody.indexOf(contentKey, choicesIdx);
+        if (contentIdx == -1) return "{\"error\":\"No content in response\"}";
+        int start = contentIdx + contentKey.length();
+        StringBuilder sb = new StringBuilder();
+        int i = start;
+        while (i < responseBody.length()) {
+            char c = responseBody.charAt(i);
+            if (c == '\\' && i + 1 < responseBody.length()) {
+                char next = responseBody.charAt(i + 1);
+                if (next == '"') { sb.append('"'); i += 2; continue; }
+                if (next == 'n') { sb.append('\n'); i += 2; continue; }
+                if (next == '\\') { sb.append('\\'); i += 2; continue; }
+                if (next == 't') { sb.append('\t'); i += 2; continue; }
+                if (next == 'r') { i += 2; continue; }
+            }
+            if (c == '"') break;
+            sb.append(c);
+            i++;
+        }
+        return sb.toString();
     }
 }

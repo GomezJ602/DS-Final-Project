@@ -1,20 +1,92 @@
-import { Activity, Flame, Target, Timer } from "lucide-react";
+import { Activity, Flame, Target, Timer, Dumbbell, Zap, Heart, Wind, ChevronRight } from "lucide-react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Progress } from "./ui/progress";
 import { ImageWithFallback } from "./common/ImageWithFallback";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { useState, useEffect } from "react";
+
+const WORKOUT_TYPES = [
+  {
+    name: "Upper Body Strength",
+    description: "Build chest, shoulders, back, and arms with compound lifts.",
+    icon: Dumbbell,
+    color: "text-blue-500",
+    bg: "bg-blue-50 dark:bg-blue-900/20",
+    duration: "45 min",
+    calories: 320,
+    difficulty: "Intermediate",
+  },
+  {
+    name: "Lower Body Power",
+    description: "Squats, lunges, and glute work to build leg strength.",
+    icon: Activity,
+    color: "text-green-500",
+    bg: "bg-green-50 dark:bg-green-900/20",
+    duration: "50 min",
+    calories: 380,
+    difficulty: "Intermediate",
+  },
+  {
+    name: "Full Body HIIT",
+    description: "High-intensity intervals for maximum calorie burn.",
+    icon: Zap,
+    color: "text-yellow-500",
+    bg: "bg-yellow-50 dark:bg-yellow-900/20",
+    duration: "30 min",
+    calories: 450,
+    difficulty: "Advanced",
+  },
+  {
+    name: "Cardio Endurance",
+    description: "Steady-state cardio to improve cardiovascular fitness.",
+    icon: Heart,
+    color: "text-red-500",
+    bg: "bg-red-50 dark:bg-red-900/20",
+    duration: "40 min",
+    calories: 400,
+    difficulty: "Beginner",
+  },
+  {
+    name: "Core & Flexibility",
+    description: "Core stability, mobility work, and deep stretching.",
+    icon: Target,
+    color: "text-purple-500",
+    bg: "bg-purple-50 dark:bg-purple-900/20",
+    duration: "35 min",
+    calories: 200,
+    difficulty: "Beginner",
+  },
+  {
+    name: "Recovery & Stretch",
+    description: "Active recovery, foam rolling, and light mobility.",
+    icon: Wind,
+    color: "text-teal-500",
+    bg: "bg-teal-50 dark:bg-teal-900/20",
+    duration: "25 min",
+    calories: 100,
+    difficulty: "Beginner",
+  },
+];
+
+const DIFFICULTY_COLORS: Record<string, string> = {
+  Beginner: "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400",
+  Intermediate: "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400",
+  Advanced: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400",
+};
 
 export default function Dashboard() {
   const [recentWorkouts, setRecentWorkouts] = useState<any[]>([]);
   const [javaStats, setJavaStats] = useState({ calories: 0, workouts: 0 });
+  const [selectorOpen, setSelectorOpen] = useState(false);
+  const [starting, setStarting] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
         const historyRes = await fetch("http://localhost:8080/api/workout/history");
         const historyData = await historyRes.json();
-        setRecentWorkouts(historyData.slice(0, 5)); // Show last 5
+        setRecentWorkouts(historyData.slice(0, 5));
 
         const statsRes = await fetch("http://localhost:8080/api/stats");
         const statsData = await statsRes.json();
@@ -25,6 +97,23 @@ export default function Dashboard() {
     };
     fetchData();
   }, []);
+
+  async function handleStartWorkout(workoutName: string) {
+    setStarting(workoutName);
+    try {
+      await fetch(`http://localhost:8080/api/workout/log?name=${encodeURIComponent(workoutName)}`, {
+        method: "POST",
+      });
+      const statsRes = await fetch("http://localhost:8080/api/stats");
+      const statsData = await statsRes.json();
+      setJavaStats(statsData);
+    } catch (error) {
+      console.error("Failed to log workout:", error);
+    } finally {
+      setStarting(null);
+      setSelectorOpen(false);
+    }
+  }
 
   const stats = [
     { icon: Flame, label: "Calories Burned", value: javaStats.calories.toLocaleString(), unit: "kcal", color: "text-orange-500 dark:text-orange-400" },
@@ -96,7 +185,12 @@ export default function Dashboard() {
                 {todayWorkout.difficulty}
               </div>
             </div>
-            <Button className="w-full dark:bg-white dark:text-black dark:hover:bg-zinc-200">Start Workout</Button>
+            <Button
+              className="w-full dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+              onClick={() => setSelectorOpen(true)}
+            >
+              Start Workout
+            </Button>
           </div>
         </Card>
 
@@ -155,6 +249,57 @@ export default function Dashboard() {
           ))}
         </div>
       </Card>
+
+      {/* Workout Type Selector Modal */}
+      <Dialog open={selectorOpen} onOpenChange={setSelectorOpen}>
+        <DialogContent className="max-w-2xl dark:bg-zinc-950 dark:border-zinc-800">
+          <DialogHeader>
+            <DialogTitle className="text-xl dark:text-white">Choose Your Workout</DialogTitle>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              Select a workout type based on your fitness goals and today's energy level.
+            </p>
+          </DialogHeader>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+            {WORKOUT_TYPES.map((type) => {
+              const Icon = type.icon;
+              const isStarting = starting === type.name;
+              return (
+                <button
+                  key={type.name}
+                  onClick={() => handleStartWorkout(type.name)}
+                  disabled={starting !== null}
+                  className="flex items-start gap-4 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-600 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-all text-left group disabled:opacity-50"
+                >
+                  <div className={`p-2.5 rounded-lg ${type.bg} flex-shrink-0`}>
+                    <Icon className={`w-5 h-5 ${type.color}`} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="font-semibold text-zinc-900 dark:text-white text-sm">{type.name}</p>
+                      <ChevronRight className="w-4 h-4 text-zinc-400 group-hover:text-zinc-600 dark:group-hover:text-zinc-300 flex-shrink-0 transition-colors" />
+                    </div>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-2 leading-snug">{type.description}</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1">
+                        <Timer className="w-3 h-3" /> {type.duration}
+                      </span>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1">
+                        <Flame className="w-3 h-3" /> {type.calories} cal
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${DIFFICULTY_COLORS[type.difficulty]}`}>
+                        {type.difficulty}
+                      </span>
+                    </div>
+                  </div>
+                  {isStarting && (
+                    <span className="text-xs text-zinc-400 dark:text-zinc-500 flex-shrink-0 self-center">Logging...</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -5,8 +5,21 @@ import { Badge } from "./ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
-import { Clock, Zap, Target, Play, Sparkles, Bot, ArrowRight, Activity, Utensils, Calendar, Settings, MessageSquarePlus } from "lucide-react";
+import {
+  Clock, Zap, Target, Play, Sparkles, Bot, ArrowRight, Activity, Utensils,
+  Calendar, Settings, MessageSquarePlus, CheckCircle2, RefreshCw, RotateCcw,
+  SkipForward, X, ListChecks,
+} from "lucide-react";
 import { ImageWithFallback } from "./common/ImageWithFallback";
+
+interface CircuitTask {
+  name: string;
+  muscle: string;
+  sets: number;
+  reps: string;
+  setsCompleted: boolean[];
+  skipped: boolean;
+}
 
 export default function Workouts() {
   const [selectedCategory, setSelectedCategory] = useState("all");
@@ -16,7 +29,10 @@ export default function Workouts() {
   const [isSearching, setIsSearching] = useState(false);
   const [currentCircuitExercise, setCurrentCircuitExercise] = useState<any>(null);
 
-  // Load exercises from Java backend
+  // Circuit state
+  const [circuitTasks, setCircuitTasks] = useState<CircuitTask[]>([]);
+  const [swapIndex, setSwapIndex] = useState(-1);
+
   useEffect(() => {
     const fetchExercises = async () => {
       try {
@@ -30,20 +46,14 @@ export default function Workouts() {
     fetchExercises();
   }, []);
 
-  // Handle Binary Search via Java Backend
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
-    
     setIsSearching(true);
     try {
       const response = await fetch(`http://localhost:8080/api/search?name=${encodeURIComponent(searchQuery)}`);
       const data = await response.json();
-      if (data.name) {
-        setSearchResult(data);
-      } else {
-        setSearchResult({ error: "No exercise found with that name." });
-      }
+      setSearchResult(data.name ? data : { error: "No exercise found with that name." });
     } catch (error) {
       console.error("Search error:", error);
     } finally {
@@ -64,11 +74,7 @@ export default function Workouts() {
     try {
       const response = await fetch("http://localhost:8080/api/workout/undo", { method: "POST" });
       const data = await response.json();
-      if (data.name) {
-        alert(`Undo successful! Removed ${data.name} from Java Stack.`);
-      } else {
-        alert("Nothing to undo in Java history.");
-      }
+      alert(data.name ? `Undo successful! Removed ${data.name} from Java Stack.` : "Nothing to undo in Java history.");
     } catch (error) {
       console.error("Undo error:", error);
     }
@@ -97,8 +103,65 @@ export default function Workouts() {
       console.error("Circuit next error:", error);
     }
   };
-  
-  // AI Wizard State
+
+  // Circuit task functions
+  function toggleSet(taskIdx: number, setIdx: number) {
+    setCircuitTasks(prev => {
+      const updated = prev.map((t, i) => {
+        if (i !== taskIdx) return t;
+        const setsCompleted = [...t.setsCompleted];
+        setsCompleted[setIdx] = !setsCompleted[setIdx];
+        return { ...t, setsCompleted };
+      });
+      localStorage.setItem("ironcore_circuit_tasks", JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function skipTask(taskIdx: number) {
+    setCircuitTasks(prev => {
+      const updated = prev.map((t, i) => i === taskIdx ? { ...t, skipped: true } : t);
+      localStorage.setItem("ironcore_circuit_tasks", JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function swapTask(taskIdx: number, exercise: any) {
+    setCircuitTasks(prev => {
+      const updated = prev.map((t, i) => i !== taskIdx ? t : {
+        name: exercise.name,
+        muscle: exercise.category,
+        sets: 3,
+        reps: "8-12",
+        setsCompleted: [false, false, false],
+        skipped: false,
+      });
+      localStorage.setItem("ironcore_circuit_tasks", JSON.stringify(updated));
+      return updated;
+    });
+    setSwapIndex(-1);
+  }
+
+  function resetCircuit() {
+    if (!aiRecommendation?.circuit) return;
+    const tasks = buildCircuitTasks(aiRecommendation.circuit);
+    setCircuitTasks(tasks);
+    localStorage.setItem("ironcore_circuit_tasks", JSON.stringify(tasks));
+    setSwapIndex(-1);
+  }
+
+  function buildCircuitTasks(circuitData: any[]): CircuitTask[] {
+    return circuitData.map(t => ({
+      name: t.name || "Exercise",
+      muscle: t.muscle || "Full Body",
+      sets: typeof t.sets === "number" ? t.sets : 3,
+      reps: t.reps || "8-12",
+      setsCompleted: Array(typeof t.sets === "number" ? t.sets : 3).fill(false),
+      skipped: false,
+    }));
+  }
+
+  // AI Wizard state
   const [showAIWizard, setShowAIWizard] = useState(false);
   const [userHeight, setUserHeight] = useState("");
   const [userWeight, setUserWeight] = useState("");
@@ -111,107 +174,83 @@ export default function Workouts() {
     workout: string;
     nutrition: string;
     classes: string;
+    circuit?: any[];
   } | null>(null);
 
-  // Progress Check-In State
+  // Progress Check-In state
   const [showProgressCheckIn, setShowProgressCheckIn] = useState(false);
   const [nutritionProgress, setNutritionProgress] = useState("");
   const [workoutProgress, setWorkoutProgress] = useState("");
   const [isCheckingIn, setIsCheckingIn] = useState(false);
   const [aiFeedback, setAiFeedback] = useState<string | null>(null);
 
-  // Load metrics from local storage on initial mount
   useEffect(() => {
     const savedHeight = localStorage.getItem("ironcore_user_height");
     const savedWeight = localStorage.getItem("ironcore_user_weight");
     const savedRec = localStorage.getItem("ironcore_ai_rec");
-    
+    const savedCircuit = localStorage.getItem("ironcore_circuit_tasks");
+
     if (savedHeight && savedWeight) {
       setUserHeight(savedHeight);
       setUserWeight(savedWeight);
       setHasSetMetrics(true);
     }
-    
+
     if (savedRec) {
       try {
-        setAiRecommendation(JSON.parse(savedRec));
+        const rec = JSON.parse(savedRec);
+        setAiRecommendation(rec);
+        // Load saved circuit progress; if none, build fresh from rec
+        if (savedCircuit) {
+          setCircuitTasks(JSON.parse(savedCircuit));
+        } else if (rec.circuit?.length) {
+          const tasks = buildCircuitTasks(rec.circuit);
+          setCircuitTasks(tasks);
+          localStorage.setItem("ironcore_circuit_tasks", JSON.stringify(tasks));
+        }
       } catch (e) {}
     } else {
       setShowAIWizard(true);
     }
   }, []);
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     setIsAnalyzing(true);
     setAiFeedback(null);
-    
-    // Save to local storage for future visits
+
     localStorage.setItem("ironcore_user_height", userHeight);
     localStorage.setItem("ironcore_user_weight", userWeight);
     setHasSetMetrics(true);
 
-    // Simulate AI processing from natural language prompt
-    setTimeout(() => {
-      setIsAnalyzing(false);
-      setShowAIWizard(false);
-      
-      let determinedPhysique = "general";
-      let programLength = "90-Day";
-      const promptText = userGoalPrompt.toLowerCase();
+    try {
+      const response = await fetch("http://localhost:8080/api/ai/workout-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ height: userHeight, weight: userWeight, goals: userGoalPrompt }),
+      });
 
-      // Guess the user's desired physique from their text prompt
-      if (promptText.includes("lean") || promptText.includes("cut") || promptText.includes("lose") || promptText.includes("shred")) {
-        determinedPhysique = "lean";
-        programLength = "180-Day";
-      } else if (promptText.includes("mass") || promptText.includes("muscle") || promptText.includes("bulk") || promptText.includes("big") || promptText.includes("hypertrophy")) {
-        determinedPhysique = "mass";
-        programLength = "12-Week";
-      } else if (promptText.includes("calisthenic") || promptText.includes("bodyweight") || promptText.includes("street")) {
-        determinedPhysique = "calisthenics";
-        programLength = "6-Month";
-      } else if (promptText.includes("endurance") || promptText.includes("stamina") || promptText.includes("run") || promptText.includes("cardio")) {
-        determinedPhysique = "endurance";
-        programLength = "16-Week";
-      }
+      const data = await response.json();
+      if (data.error) { alert("AI error: " + data.error); return; }
 
-      let programTitle = `${programLength} General Wellness Program`;
-      let workout = "A mix of Core Strength, Morning Stretch, and Full Body Blast to maintain overall wellness (3-4x/week). Stick with it to build a consistent habit.";
-      let nutrition = "Focus on whole foods, lean proteins, and plenty of hydration. No strict calorie counting required.";
-      let classes = "Yoga Flow & Casual Spin Classes";
-
-      if (determinedPhysique === "lean") {
-        programTitle = `${programLength} Lean & Fit Program`;
-        workout = "Phase 1: Build a cardio base with HIIT Cardio. Phase 2: Introduce high-rep lightweight resistance. Phase 3: Dynamic circuits to shred and tone (4-5x/week). Stick with this for the full 180 days to see optimal leaning out.";
-        nutrition = "Maintain a slight caloric deficit (-300 to -500 kcal). Prioritize lean proteins (40%), complex carbs (30%), and healthy fats (30%).";
-        classes = "Pilates Core & Boxing Conditioning";
-      } else if (determinedPhysique === "mass") {
-        programTitle = `${programLength} Massive Muscle Builder`;
-        workout = "Phase 1: Foundation strength. Phase 2: Upper Body Power & Lower Body Hypertrophy splits (4-5x/week). Progressive overload is key. Stick with it for 12 weeks to see significant mass gains.";
-        nutrition = "High protein, caloric surplus (+300-500 kcal). Recommended 50/30/20 (Carbs/Protein/Fat) split.";
-        classes = "CrossFit Metcon & Strength Fundamentals";
-      } else if (determinedPhysique === "endurance") {
-        programTitle = `${programLength} Iron Stamina Routine`;
-        workout = "Track Speed Intervals, long distance pacing, and core stability circuits (4x/week). Progressively increase volume over 16 weeks.";
-        nutrition = "High carbohydrate intake for sustained energy stores. 60/20/20 macro split.";
-        classes = "Cycling, Swimming Laps & Rowing Classes";
-      } else if (determinedPhysique === "calisthenics") {
-        programTitle = `${programLength} Calisthenics Mastery`;
-        workout = "Phase 1: Bodyweight Fundamentals (Pushups, Pull-ups). Phase 2: Isometric holds. Phase 3: Advanced Street Workout (Muscle-ups, Levers). Train 4x/week for 6 months to master your bodyweight.";
-        nutrition = "Maintenance or slight surplus to fuel muscle repair. High protein intake (1g per lb of body weight) to support strength-to-weight ratio.";
-        classes = "Bodyweight Fundamentals & Gymnastics Strength";
-      }
-
-      const rec = {
-        title: programTitle,
-        prompt: userGoalPrompt,
-        workout,
-        nutrition,
-        classes,
-      };
-
+      const rec = { ...data, prompt: userGoalPrompt };
       setAiRecommendation(rec);
       localStorage.setItem("ironcore_ai_rec", JSON.stringify(rec));
-    }, 1500);
+
+      // Build and reset circuit from new recommendation
+      if (rec.circuit && Array.isArray(rec.circuit) && rec.circuit.length > 0) {
+        const tasks = buildCircuitTasks(rec.circuit.slice(0, 6));
+        setCircuitTasks(tasks);
+        localStorage.setItem("ironcore_circuit_tasks", JSON.stringify(tasks));
+      }
+
+      setSwapIndex(-1);
+      setShowAIWizard(false);
+    } catch (error) {
+      console.error("AI analysis error:", error);
+      alert("Failed to generate plan. Make sure the Java server is running.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const handleCheckIn = () => {
@@ -219,29 +258,24 @@ export default function Workouts() {
     setTimeout(() => {
       setIsCheckingIn(false);
       setShowProgressCheckIn(false);
-      
       setAiFeedback(`Great job checking in! Based on your nutrition update ("${nutritionProgress}") and workout progress ("${workoutProgress}"), I've lightly adjusted your plan below to ensure you avoid plateaus and recover adequately. Keep up the solid momentum!`);
-      
-      // Lightly tweak the current recommendation to show it adapted
       setAiRecommendation(prev => {
         if (!prev) return null;
         const newRec = {
           ...prev,
           workout: prev.workout.replace(/\(.*\)/, "") + " (Adjusted based on check-in: Added 1 active recovery day and refined intensity).",
-          nutrition: prev.nutrition.replace(/\(.*\)/, "") + " (Adjusted macros: slightly increased protein to support recovery based on your report)."
+          nutrition: prev.nutrition.replace(/\(.*\)/, "") + " (Adjusted macros: slightly increased protein to support recovery based on your report).",
         };
         localStorage.setItem("ironcore_ai_rec", JSON.stringify(newRec));
         return newRec;
       });
-      
-      // Clear inputs for next time
       setNutritionProgress("");
       setWorkoutProgress("");
     }, 1500);
   };
 
-  const filteredWorkouts = selectedCategory === "all" 
-    ? exercises 
+  const filteredWorkouts = selectedCategory === "all"
+    ? exercises
     : exercises.filter(w => w.category === selectedCategory);
 
   const getDifficultyColor = (difficulty: string) => {
@@ -253,6 +287,9 @@ export default function Workouts() {
     }
   };
 
+  const completedCount = circuitTasks.filter(t => t.setsCompleted.every(Boolean) || t.skipped).length;
+  const doneCount = circuitTasks.filter(t => t.setsCompleted.every(Boolean)).length;
+
   return (
     <div className="p-8 dark:bg-black min-h-screen">
       <div className="mb-8 flex flex-col md:flex-row md:items-start justify-between gap-4">
@@ -260,9 +297,8 @@ export default function Workouts() {
           <h1 className="text-3xl font-bold text-zinc-900 dark:text-white mb-2">Workout Plans</h1>
           <p className="text-zinc-600 dark:text-zinc-400">Choose a workout that fits your goals and schedule</p>
         </div>
-        
         {!showAIWizard && !aiRecommendation && (
-          <Button 
+          <Button
             onClick={() => setShowAIWizard(true)}
             className="bg-indigo-600 hover:bg-indigo-700 text-white shrink-0 shadow-md transition-all hover:scale-105"
           >
@@ -272,6 +308,7 @@ export default function Workouts() {
         )}
       </div>
 
+      {/* AI Wizard */}
       {showAIWizard && (
         <Card className="mb-8 p-6 border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 shadow-inner">
           <div className="flex items-start gap-4 mb-6">
@@ -283,7 +320,7 @@ export default function Workouts() {
                 {aiRecommendation ? "Adjust Your Goals" : "AI Workout Coach"}
               </h2>
               <p className="text-zinc-600 dark:text-zinc-400 text-sm mt-1 max-w-2xl">
-                {hasSetMetrics 
+                {hasSetMetrics
                   ? "Update your desired goals below, and I'll generate a fresh timeline and recommendation for you."
                   : "Tell me your height, weight, and in your own words what physique or goals you're looking to achieve. I'll build you a dedicated program."}
               </p>
@@ -295,27 +332,14 @@ export default function Workouts() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <Label htmlFor="height" className="dark:text-zinc-300">Height</Label>
-                  <Input 
-                    id="height" 
-                    placeholder="e.g., 5'10&quot; or 178cm" 
-                    value={userHeight}
-                    onChange={(e) => setUserHeight(e.target.value)}
-                    className="bg-white dark:bg-black dark:border-zinc-800 dark:text-white transition-colors focus:ring-indigo-500"
-                  />
+                  <Input id="height" placeholder="e.g., 5'10&quot; or 178cm" value={userHeight} onChange={e => setUserHeight(e.target.value)} className="bg-white dark:bg-black dark:border-zinc-800 dark:text-white" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="weight" className="dark:text-zinc-300">Weight</Label>
-                  <Input 
-                    id="weight" 
-                    placeholder="e.g., 170 lbs or 77kg" 
-                    value={userWeight}
-                    onChange={(e) => setUserWeight(e.target.value)}
-                    className="bg-white dark:bg-black dark:border-zinc-800 dark:text-white transition-colors focus:ring-indigo-500"
-                  />
+                  <Input id="weight" placeholder="e.g., 170 lbs or 77kg" value={userWeight} onChange={e => setUserWeight(e.target.value)} className="bg-white dark:bg-black dark:border-zinc-800 dark:text-white" />
                 </div>
               </div>
             )}
-            
             <div className="space-y-2">
               <div className="flex justify-between items-end">
                 <Label htmlFor="goalPrompt" className="dark:text-zinc-300">Describe your goals</Label>
@@ -325,99 +349,55 @@ export default function Workouts() {
                   </span>
                 )}
               </div>
-              <Input 
-                id="goalPrompt"
-                placeholder="e.g., I'm looking to get fit and lean, or I want to learn calisthenics"
-                value={userGoalPrompt}
-                onChange={(e) => setUserGoalPrompt(e.target.value)}
-                className="bg-white dark:bg-black dark:border-zinc-800 dark:text-white transition-colors focus:ring-indigo-500"
-              />
+              <Input id="goalPrompt" placeholder="e.g., I'm looking to get fit and lean, or I want to learn calisthenics" value={userGoalPrompt} onChange={e => setUserGoalPrompt(e.target.value)} className="bg-white dark:bg-black dark:border-zinc-800 dark:text-white" />
             </div>
-            
             {hasSetMetrics && (
-               <div className="flex items-center justify-start mt-[-10px]">
-                  <Button 
-                    variant="link" 
-                    onClick={() => setHasSetMetrics(false)}
-                    className="text-indigo-600 dark:text-indigo-400 p-0 h-auto font-medium"
-                  >
-                    Edit Height & Weight
-                  </Button>
-               </div>
+              <div className="flex items-center justify-start mt-[-10px]">
+                <Button variant="link" onClick={() => setHasSetMetrics(false)} className="text-indigo-600 dark:text-indigo-400 p-0 h-auto font-medium">
+                  Edit Height & Weight
+                </Button>
+              </div>
             )}
           </div>
 
           <div className="flex justify-end gap-3">
-            <Button 
-              variant="ghost" 
-              onClick={() => {
-                setShowAIWizard(false);
-                if (!aiRecommendation && !hasSetMetrics) {
-                  setUserHeight("");
-                  setUserWeight("");
-                  setUserGoalPrompt("");
-                }
-              }} 
-              className="dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
+            <Button variant="ghost" onClick={() => { setShowAIWizard(false); if (!aiRecommendation && !hasSetMetrics) { setUserHeight(""); setUserWeight(""); setUserGoalPrompt(""); } }} className="dark:text-zinc-300 dark:hover:bg-zinc-800">
               Cancel
             </Button>
-            <Button 
-              className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[140px]"
-              disabled={!userHeight || !userWeight || !userGoalPrompt || isAnalyzing}
-              onClick={handleAnalyze}
-            >
+            <Button className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[140px]" disabled={!userHeight || !userWeight || !userGoalPrompt || isAnalyzing} onClick={handleAnalyze}>
               {isAnalyzing ? (
-                <div className="flex items-center">
-                  <Activity className="w-4 h-4 mr-2 animate-pulse" />
-                  Analyzing...
-                </div>
+                <span className="flex items-center"><Activity className="w-4 h-4 mr-2 animate-pulse" />Analyzing...</span>
               ) : (
-                <div className="flex items-center">
-                  {aiRecommendation ? "Update Plan" : "Generate Plan"}
-                  <ArrowRight className="w-4 h-4 ml-2" />
-                </div>
+                <span className="flex items-center">{aiRecommendation ? "Update Plan" : "Generate Plan"}<ArrowRight className="w-4 h-4 ml-2" /></span>
               )}
             </Button>
           </div>
         </Card>
       )}
 
+      {/* AI Recommendation Card */}
       {aiRecommendation && !showAIWizard && (
         <Card className="mb-8 p-6 border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 relative overflow-hidden shadow-lg">
           <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none" />
-          
+
           <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-6 relative z-10">
             <div className="flex items-start gap-4">
               <div className="p-3 bg-indigo-100 dark:bg-indigo-900/50 rounded-full text-indigo-600 dark:text-indigo-400">
                 <Sparkles className="w-6 h-6" />
               </div>
               <div>
-                <h2 className="text-xl md:text-2xl font-bold text-zinc-900 dark:text-white">
-                  {aiRecommendation.title}
-                </h2>
+                <h2 className="text-xl md:text-2xl font-bold text-zinc-900 dark:text-white">{aiRecommendation.title}</h2>
                 <p className="text-zinc-600 dark:text-zinc-400 text-sm mt-1">
                   Based on your profile ({userHeight}, {userWeight}) and goal: "{aiRecommendation.prompt}"
                 </p>
               </div>
             </div>
-            
             <div className="flex gap-2">
-              <Button 
-                variant="outline" 
-                onClick={() => setShowProgressCheckIn(!showProgressCheckIn)}
-                className="dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 text-xs md:text-sm border-indigo-200 text-indigo-700 hover:bg-indigo-50 dark:border-indigo-900/50 dark:text-indigo-300 dark:hover:bg-indigo-900/30"
-              >
-                <MessageSquarePlus className="w-4 h-4 mr-2" />
-                Progress Check-In
+              <Button variant="outline" onClick={() => setShowProgressCheckIn(!showProgressCheckIn)} className="border-indigo-200 text-indigo-700 hover:bg-indigo-50 dark:border-indigo-900/50 dark:text-indigo-300 dark:hover:bg-indigo-900/30 text-xs md:text-sm">
+                <MessageSquarePlus className="w-4 h-4 mr-2" />Progress Check-In
               </Button>
-              <Button 
-                variant="outline" 
-                onClick={() => setShowAIWizard(true)}
-                className="dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 text-xs md:text-sm"
-              >
-                <Settings className="w-4 h-4 mr-2" />
-                Change Goals
+              <Button variant="outline" onClick={() => setShowAIWizard(true)} className="dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 text-xs md:text-sm">
+                <Settings className="w-4 h-4 mr-2" />Change Goals
               </Button>
             </div>
           </div>
@@ -425,41 +405,21 @@ export default function Workouts() {
           {showProgressCheckIn && (
             <div className="mb-6 p-4 md:p-5 bg-white dark:bg-black rounded-xl border border-indigo-100 dark:border-indigo-900/40 relative z-10 shadow-sm animate-in slide-in-from-top-2 duration-200">
               <h3 className="font-semibold text-zinc-900 dark:text-white mb-3 flex items-center">
-                <Bot className="w-4 h-4 mr-2 text-indigo-500" />
-                How are you feeling about your plan?
+                <Bot className="w-4 h-4 mr-2 text-indigo-500" />How are you feeling about your plan?
               </h3>
-              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div className="space-y-2">
                   <Label htmlFor="nutrition-progress" className="dark:text-zinc-300 text-sm">Nutrition Progress</Label>
-                  <Input 
-                    id="nutrition-progress" 
-                    placeholder="e.g., Struggling with protein, feeling hungry..." 
-                    value={nutritionProgress}
-                    onChange={(e) => setNutritionProgress(e.target.value)}
-                    className="bg-zinc-50 dark:bg-black dark:border-zinc-800 dark:text-white"
-                  />
+                  <Input id="nutrition-progress" placeholder="e.g., Struggling with protein, feeling hungry..." value={nutritionProgress} onChange={e => setNutritionProgress(e.target.value)} className="bg-zinc-50 dark:bg-black dark:border-zinc-800 dark:text-white" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="workout-progress" className="dark:text-zinc-300 text-sm">Workout Progress</Label>
-                  <Input 
-                    id="workout-progress" 
-                    placeholder="e.g., Workouts feel great, slightly sore..." 
-                    value={workoutProgress}
-                    onChange={(e) => setWorkoutProgress(e.target.value)}
-                    className="bg-zinc-50 dark:bg-black dark:border-zinc-800 dark:text-white"
-                  />
+                  <Input id="workout-progress" placeholder="e.g., Workouts feel great, slightly sore..." value={workoutProgress} onChange={e => setWorkoutProgress(e.target.value)} className="bg-zinc-50 dark:bg-black dark:border-zinc-800 dark:text-white" />
                 </div>
               </div>
-              
               <div className="flex justify-end gap-2">
                 <Button variant="ghost" size="sm" onClick={() => setShowProgressCheckIn(false)}>Cancel</Button>
-                <Button 
-                  size="sm" 
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white"
-                  disabled={!nutritionProgress && !workoutProgress || isCheckingIn}
-                  onClick={handleCheckIn}
-                >
+                <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white" disabled={(!nutritionProgress && !workoutProgress) || isCheckingIn} onClick={handleCheckIn}>
                   {isCheckingIn ? "Analyzing..." : "Submit Check-In"}
                 </Button>
               </div>
@@ -470,9 +430,7 @@ export default function Workouts() {
             <div className="mb-6 p-4 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/30 rounded-xl relative z-10">
               <div className="flex gap-3">
                 <Bot className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
-                <p className="text-sm text-indigo-900 dark:text-indigo-200 leading-relaxed">
-                  {aiFeedback}
-                </p>
+                <p className="text-sm text-indigo-900 dark:text-indigo-200 leading-relaxed">{aiFeedback}</p>
               </div>
             </div>
           )}
@@ -480,65 +438,182 @@ export default function Workouts() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 relative z-10">
             <Card className="p-5 border-none shadow-sm dark:bg-zinc-900">
               <div className="flex items-center gap-2 mb-3 text-indigo-600 dark:text-indigo-400">
-                <Activity className="w-5 h-5" />
-                <h3 className="font-semibold text-lg">Workout Routine</h3>
+                <Activity className="w-5 h-5" /><h3 className="font-semibold text-lg">Workout Routine</h3>
               </div>
-              <p className="text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">
-                {aiRecommendation.workout}
-              </p>
+              <p className="text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">{aiRecommendation.workout}</p>
             </Card>
-            
             <Card className="p-5 border-none shadow-sm dark:bg-zinc-900">
               <div className="flex items-center gap-2 mb-3 text-emerald-600 dark:text-emerald-400">
-                <Utensils className="w-5 h-5" />
-                <h3 className="font-semibold text-lg">Nutrition Guide</h3>
+                <Utensils className="w-5 h-5" /><h3 className="font-semibold text-lg">Nutrition Guide</h3>
               </div>
-              <p className="text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">
-                {aiRecommendation.nutrition}
-              </p>
+              <p className="text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">{aiRecommendation.nutrition}</p>
             </Card>
-
             <Card className="p-5 border-none shadow-sm dark:bg-zinc-900">
               <div className="flex items-center gap-2 mb-3 text-amber-600 dark:text-amber-400">
-                <Calendar className="w-5 h-5" />
-                <h3 className="font-semibold text-lg">Suggested Classes</h3>
+                <Calendar className="w-5 h-5" /><h3 className="font-semibold text-lg">Suggested Classes</h3>
               </div>
-              <p className="text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">
-                {aiRecommendation.classes}
-              </p>
+              <p className="text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">{aiRecommendation.classes}</p>
             </Card>
           </div>
         </Card>
       )}
 
+      {/* ── TODAY'S CIRCUIT ─────────────────────────────────────── */}
+      {aiRecommendation && circuitTasks.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-bold dark:text-white flex items-center gap-2">
+                <ListChecks className="w-5 h-5 text-emerald-500" />
+                Today's Circuit
+              </h2>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-0.5">
+                Complete as many exercises as you can — you don't need to do them all.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                {doneCount}/{circuitTasks.length} done
+              </span>
+              <Button variant="outline" size="sm" onClick={resetCircuit} className="dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 text-xs">
+                <RotateCcw className="w-3 h-3 mr-1.5" />Reset
+              </Button>
+            </div>
+          </div>
+
+          {/* Progress bar */}
+          <div className="h-1.5 bg-zinc-100 dark:bg-zinc-800 rounded-full mb-6 overflow-hidden">
+            <div
+              className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+              style={{ width: `${circuitTasks.length ? (doneCount / circuitTasks.length) * 100 : 0}%` }}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {circuitTasks.map((task, idx) => {
+              const allSetsComplete = task.setsCompleted.every(Boolean);
+              return (
+                <div
+                  key={idx}
+                  className={`rounded-xl border p-4 transition-all ${
+                    allSetsComplete
+                      ? "border-emerald-300 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/10"
+                      : task.skipped
+                      ? "border-zinc-200 dark:border-zinc-800 opacity-50"
+                      : "border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40"
+                  }`}
+                >
+                  {/* Task header */}
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        {allSetsComplete && <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />}
+                        <span className={`font-semibold text-sm dark:text-white truncate ${allSetsComplete ? "line-through text-zinc-400 dark:text-zinc-500" : ""}`}>
+                          {task.name}
+                        </span>
+                      </div>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                        {task.muscle} &bull; {task.sets} sets &times; {task.reps}
+                      </p>
+                    </div>
+                    {!allSetsComplete && !task.skipped && (
+                      <button
+                        onClick={() => setSwapIndex(swapIndex === idx ? -1 : idx)}
+                        className={`ml-2 flex items-center gap-1 text-xs transition-colors flex-shrink-0 ${
+                          swapIndex === idx
+                            ? "text-indigo-700 dark:text-indigo-300 font-semibold"
+                            : "text-indigo-500 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-200"
+                        }`}
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        {swapIndex === idx ? "Cancel" : "Swap"}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Set buttons */}
+                  {!task.skipped && (
+                    <div className="flex gap-1.5 mb-3">
+                      {task.setsCompleted.map((done, setIdx) => (
+                        <button
+                          key={setIdx}
+                          onClick={() => !allSetsComplete && toggleSet(idx, setIdx)}
+                          className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all ${
+                            done
+                              ? "bg-emerald-500 text-white"
+                              : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                          }`}
+                        >
+                          {done ? "✓" : `Set ${setIdx + 1}`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {task.skipped && (
+                    <p className="text-xs text-zinc-400 dark:text-zinc-500 italic mb-1">Skipped</p>
+                  )}
+
+                  {!allSetsComplete && !task.skipped && (
+                    <button
+                      onClick={() => skipTask(idx)}
+                      className="text-xs text-zinc-400 hover:text-zinc-500 dark:hover:text-zinc-300 flex items-center gap-1 transition-colors"
+                    >
+                      <SkipForward className="w-3 h-3" />
+                      Skip this exercise
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Swap picker — appears below grid when active */}
+          {swapIndex !== -1 && (
+            <div className="mt-4 p-4 rounded-xl border border-indigo-200 dark:border-indigo-800/50 bg-indigo-50/30 dark:bg-indigo-950/20 animate-in slide-in-from-top-2 duration-200">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-semibold dark:text-white">
+                  Replace <span className="text-indigo-600 dark:text-indigo-400">"{circuitTasks[swapIndex]?.name}"</span> with:
+                </p>
+                <button onClick={() => setSwapIndex(-1)} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {exercises.map(ex => (
+                  <button
+                    key={ex.name}
+                    onClick={() => swapTask(swapIndex, ex)}
+                    className="text-left p-3 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-indigo-400 dark:hover:border-indigo-600 transition-all group"
+                  >
+                    <p className="text-xs font-semibold dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 truncate">{ex.name}</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 capitalize">{ex.category} &bull; {ex.difficulty}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {aiRecommendation ? (
         <>
-          {/* Java Data Structures Demo Section */}
-          <div className="mb-8 p-6 bg-zinc-50 dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 relative z-10 shadow-sm">
+          {/* Java Data Structures Section */}
+          <div className="mb-8 p-6 bg-zinc-50 dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
               <div>
                 <h2 className="text-xl font-bold dark:text-white flex items-center gap-2">
-                  <Settings className="w-5 h-5 text-indigo-600" />
-                  Java Logic Engine
+                  <Settings className="w-5 h-5 text-indigo-600" />Java Logic Engine
                 </h2>
-                <p className="text-sm text-zinc-500 dark:text-zinc-400">Powered by Java Data Structures (Binary Search, Stacks, HashMaps)</p>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">Powered by Java Data Structures (Binary Search, Stacks, HashMaps, Queues)</p>
               </div>
-              <Button 
-                variant="outline" 
-                onClick={undoWorkout}
-                className="dark:border-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-              >
+              <Button variant="outline" onClick={undoWorkout} className="dark:border-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800">
                 Undo Last Log (Stack)
               </Button>
             </div>
 
             <form onSubmit={handleSearch} className="flex gap-2">
-              <Input 
-                placeholder="Search exercises using Java Binary Search..." 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="dark:bg-black dark:border-zinc-800 dark:text-white flex-1"
-              />
+              <Input placeholder="Search exercises using Java Binary Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="dark:bg-black dark:border-zinc-800 dark:text-white flex-1" />
               <Button type="submit" disabled={isSearching} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6">
                 {isSearching ? "Searching..." : "Search"}
               </Button>
@@ -564,100 +639,67 @@ export default function Workouts() {
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
                 <h3 className="font-bold dark:text-white flex items-center gap-2">
                   <Activity className="w-5 h-5 text-emerald-600" />
-                  Workout Circuit (Queue)
+                  Queue Circuit (Library Exercises)
                 </h3>
-                <Button 
-                  onClick={nextCircuit} 
-                  variant="default"
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                >
-                  Next Circuit Exercise (FIFO)
+                <Button onClick={nextCircuit} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                  Next Exercise (FIFO)
                 </Button>
               </div>
-          
               {currentCircuitExercise ? (
                 <div className="p-4 bg-emerald-50 dark:bg-emerald-950/20 rounded-lg border border-emerald-100 dark:border-emerald-900/50 flex items-center justify-between animate-in zoom-in-95 duration-300">
-                   <div>
-                      <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1">Current Active Exercise</p>
-                      <h4 className="text-xl font-bold dark:text-white">{currentCircuitExercise.name}</h4>
-                      <p className="text-sm text-zinc-500">{currentCircuitExercise.duration} • {currentCircuitExercise.category}</p>
-                   </div>
-                   <Button size="sm" onClick={() => logWorkout(currentCircuitExercise.name)}>Complete & Log</Button>
+                  <div>
+                    <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1">Current Active Exercise</p>
+                    <h4 className="text-xl font-bold dark:text-white">{currentCircuitExercise.name}</h4>
+                    <p className="text-sm text-zinc-500">{currentCircuitExercise.duration} • {currentCircuitExercise.category}</p>
+                  </div>
+                  <Button size="sm" onClick={() => logWorkout(currentCircuitExercise.name)}>Complete & Log</Button>
                 </div>
               ) : (
-                <p className="text-sm text-zinc-500 italic">No exercise active in circuit. Add some exercises below!</p>
+                <p className="text-sm text-zinc-500 italic">No exercise active. Add exercises below to queue them here.</p>
               )}
             </div>
           </div>
 
+          {/* Exercise Library */}
           <Tabs defaultValue="all" className="mb-8">
             <TabsList className="dark:bg-black flex-wrap h-auto gap-2">
-              <TabsTrigger value="all" onClick={() => setSelectedCategory("all")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">
-                All Workouts
-              </TabsTrigger>
-              <TabsTrigger value="strength" onClick={() => setSelectedCategory("strength")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">
-                Strength
-              </TabsTrigger>
-              <TabsTrigger value="cardio" onClick={() => setSelectedCategory("cardio")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">
-                Cardio
-              </TabsTrigger>
-              <TabsTrigger value="flexibility" onClick={() => setSelectedCategory("flexibility")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">
-                Flexibility
-              </TabsTrigger>
-              <TabsTrigger value="calisthenics" onClick={() => setSelectedCategory("calisthenics")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">
-                Calisthenics
-              </TabsTrigger>
+              <TabsTrigger value="all" onClick={() => setSelectedCategory("all")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">All Workouts</TabsTrigger>
+              <TabsTrigger value="strength" onClick={() => setSelectedCategory("strength")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">Strength</TabsTrigger>
+              <TabsTrigger value="cardio" onClick={() => setSelectedCategory("cardio")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">Cardio</TabsTrigger>
+              <TabsTrigger value="flexibility" onClick={() => setSelectedCategory("flexibility")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">Flexibility</TabsTrigger>
+              <TabsTrigger value="calisthenics" onClick={() => setSelectedCategory("calisthenics")} className="dark:data-[state=active]:bg-zinc-800 dark:data-[state=active]:text-white dark:text-zinc-400">Calisthenics</TabsTrigger>
             </TabsList>
 
             <TabsContent value={selectedCategory} className="mt-6">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {filteredWorkouts.map((workout) => (
+                {filteredWorkouts.map(workout => (
                   <Card key={workout.id} className="overflow-hidden hover:shadow-lg transition-shadow dark:bg-black dark:border-zinc-800">
                     <div className="relative h-48">
-                      <ImageWithFallback
-                        src={workout.image}
-                        alt={workout.name}
-                        className="w-full h-full object-cover"
-                      />
+                      <ImageWithFallback src={workout.image} alt={workout.name} className="w-full h-full object-cover" />
                       <div className="absolute top-3 right-3">
-                        <Badge className={`${getDifficultyColor(workout.difficulty)} border-0 shadow-sm`}>
-                          {workout.difficulty}
-                        </Badge>
+                        <Badge className={`${getDifficultyColor(workout.difficulty)} border-0 shadow-sm`}>{workout.difficulty}</Badge>
                       </div>
                     </div>
                     <div className="p-5">
                       <h3 className="text-lg font-semibold text-zinc-900 dark:text-white mb-2">{workout.name}</h3>
                       <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">{workout.description}</p>
-                      
                       <div className="grid grid-cols-3 gap-2 mb-4">
                         <div className="flex flex-col items-center p-2 bg-zinc-50 dark:bg-zinc-900/50 rounded border border-transparent dark:border-zinc-800">
-                          <Clock className="w-4 h-4 text-zinc-500 dark:text-zinc-400 mb-1" />
-                          <span className="text-xs text-zinc-600 dark:text-zinc-300">{workout.duration}</span>
+                          <Clock className="w-4 h-4 text-zinc-500 dark:text-zinc-400 mb-1" /><span className="text-xs text-zinc-600 dark:text-zinc-300">{workout.duration}</span>
                         </div>
                         <div className="flex flex-col items-center p-2 bg-zinc-50 dark:bg-zinc-900/50 rounded border border-transparent dark:border-zinc-800">
-                          <Zap className="w-4 h-4 text-zinc-500 dark:text-zinc-400 mb-1" />
-                          <span className="text-xs text-zinc-600 dark:text-zinc-300">{workout.calories} cal</span>
+                          <Zap className="w-4 h-4 text-zinc-500 dark:text-zinc-400 mb-1" /><span className="text-xs text-zinc-600 dark:text-zinc-300">{workout.calories} cal</span>
                         </div>
                         <div className="flex flex-col items-center p-2 bg-zinc-50 dark:bg-zinc-900/50 rounded border border-transparent dark:border-zinc-800">
-                          <Target className="w-4 h-4 text-zinc-500 dark:text-zinc-400 mb-1" />
-                          <span className="text-xs text-zinc-600 dark:text-zinc-300">{workout.exercises} ex</span>
+                          <Target className="w-4 h-4 text-zinc-500 dark:text-zinc-400 mb-1" /><span className="text-xs text-zinc-600 dark:text-zinc-300">{workout.exercises} ex</span>
                         </div>
                       </div>
-
                       <div className="grid grid-cols-2 gap-2">
-                        <Button 
-                          onClick={() => logWorkout(workout.name)}
-                          className="flex-1 dark:bg-white dark:text-black dark:hover:bg-zinc-200 shadow-sm"
-                        >
-                          <Play className="w-4 h-4 mr-2" />
-                          Log (Stack)
+                        <Button onClick={() => logWorkout(workout.name)} className="flex-1 dark:bg-white dark:text-black dark:hover:bg-zinc-200 shadow-sm">
+                          <Play className="w-4 h-4 mr-2" />Log (Stack)
                         </Button>
-                        <Button 
-                          variant="outline"
-                          onClick={() => addToCircuit(workout.name)}
-                          className="flex-1 dark:border-zinc-700 dark:text-zinc-300"
-                        >
-                          + Circuit (Queue)
+                        <Button variant="outline" onClick={() => addToCircuit(workout.name)} className="flex-1 dark:border-zinc-700 dark:text-zinc-300">
+                          + Queue
                         </Button>
                       </div>
                     </div>

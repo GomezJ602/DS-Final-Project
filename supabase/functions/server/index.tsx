@@ -181,4 +181,65 @@ app.post("/make-server-6935bede/points", async (c) => {
   }
 });
 
+// Custom foods endpoints
+app.get("/make-server-6935bede/custom-foods", async (c) => {
+  try {
+    const dataStr = await kv.get("custom_foods");
+    const foods = dataStr ? JSON.parse(dataStr) : [];
+    return c.json({ foods });
+  } catch (error) {
+    console.warn("Error fetching custom foods:", error);
+    return c.json({ foods: [] });
+  }
+});
+
+app.post("/make-server-6935bede/custom-foods", async (c) => {
+  try {
+    const body = await c.req.json();
+    if (!body.name || body.calories === undefined) {
+      return c.json({ error: "Name and calories are required" }, 400);
+    }
+    const dataStr = await kv.get("custom_foods");
+    const existing = dataStr ? JSON.parse(dataStr) : [];
+    const newFood = {
+      id: crypto.randomUUID(),
+      name: body.name,
+      brand: body.brand || "",
+      servingSize: body.servingSize || "100g",
+      calories: Number(body.calories) || 0,
+      macros: {
+        protein: Number(body.macros?.protein) || 0,
+        carbs: Number(body.macros?.carbs) || 0,
+        fats: Number(body.macros?.fats) || 0,
+        fiber: Number(body.macros?.fiber) || 0,
+        sugar: Number(body.macros?.sugar) || 0,
+        sodium: Number(body.macros?.sodium) || 0,
+      },
+      notes: body.notes || "",
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [...existing, newFood];
+    await kv.set("custom_foods", JSON.stringify(updated));
+    return c.json({ food: newFood, foods: updated });
+  } catch (error) {
+    console.warn("Error creating custom food:", error);
+    return c.json({ error: "Failed to create custom food" }, 500);
+  }
+});
+
+app.delete("/make-server-6935bede/custom-foods/:id", async (c) => {
+  try {
+    const id = c.req.param("id");
+    const dataStr = await kv.get("custom_foods");
+    if (!dataStr) return c.json({ foods: [] });
+    const foods = JSON.parse(dataStr);
+    const updated = foods.filter((f: any) => f.id !== id);
+    await kv.set("custom_foods", JSON.stringify(updated));
+    return c.json({ foods: updated });
+  } catch (error) {
+    console.warn("Error deleting custom food:", error);
+    return c.json({ error: "Failed to delete custom food" }, 500);
+  }
+});
+
 Deno.serve(app.fetch);
