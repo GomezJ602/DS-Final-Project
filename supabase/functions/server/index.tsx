@@ -242,4 +242,46 @@ app.delete("/make-server-6935bede/custom-foods/:id", async (c) => {
   }
 });
 
+// UPC scan log endpoints (stored in Supabase Postgres via kv_store_6935bede)
+app.get("/make-server-6935bede/upc-scans", async (c) => {
+  try {
+    const dateStr = new Date().toISOString().split("T")[0];
+    const key = `upc_scans_${dateStr}`;
+    const dataStr = await kv.get(key);
+    const scans = dataStr ? JSON.parse(dataStr) : [];
+    return c.json({ scans });
+  } catch (error) {
+    console.warn("Error fetching UPC scans:", error);
+    return c.json({ scans: [] });
+  }
+});
+
+app.post("/make-server-6935bede/upc-scans", async (c) => {
+  try {
+    const body = await c.req.json();
+    const upc = String(body?.upc || "").trim();
+    if (!upc) return c.json({ error: "upc is required" }, 400);
+
+    const dateStr = new Date().toISOString().split("T")[0];
+    const key = `upc_scans_${dateStr}`;
+    const dataStr = await kv.get(key);
+    const existing = dataStr ? JSON.parse(dataStr) : [];
+
+    const item = {
+      id: crypto.randomUUID(),
+      upc,
+      name: body?.name || null,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Keep the newest scans first; cap list size to avoid unbounded growth.
+    const updated = [item, ...existing].slice(0, 50);
+    await kv.set(key, JSON.stringify(updated));
+    return c.json({ scan: item, scans: updated });
+  } catch (error) {
+    console.warn("Error creating UPC scan:", error);
+    return c.json({ error: "Failed to save UPC scan" }, 500);
+  }
+});
+
 Deno.serve(app.fetch);

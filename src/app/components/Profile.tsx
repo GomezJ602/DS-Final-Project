@@ -4,13 +4,23 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Badge } from "./ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs";
-import { User, Mail, Phone, MapPin, Calendar, Award, Settings, CreditCard, Moon, Sun, AlertTriangle } from "lucide-react";
+import { Mail, Phone, MapPin, Calendar, Award, Moon, Sun, AlertTriangle } from "lucide-react";
 import { useState, useEffect } from "react";
-import { projectId, publicAnonKey } from "../../../utils/supabase/info";
+import { useUser } from "../context/UserContext";
+import type { UserInfo } from "../context/UserContext";
 
 export default function Profile() {
-  const [weight, setWeight] = useState("170");
+  const { user, updateUser } = useUser();
+
+  const [draft, setDraft] = useState<UserInfo>(user);
   const [isSaving, setIsSaving] = useState(false);
+
+  const setField = (field: keyof UserInfo) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setDraft((prev) => ({ ...prev, [field]: e.target.value }));
+
+  const hasChanges = (Object.keys(draft) as (keyof UserInfo)[]).some(
+    (k) => draft[k] !== user[k]
+  );
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [planType, setPlanType] = useState<"Monthly" | "Annual">("Monthly");
   const [isTrial, setIsTrial] = useState(true);
@@ -19,47 +29,16 @@ export default function Profile() {
   const annualPrice = monthlyPrice * 12 * 0.9; // 10% discount
 
   useEffect(() => {
-    // Check initial dark mode state
     setIsDarkMode(document.documentElement.classList.contains('dark'));
-    
-    const fetchWeight = async () => {
-      try {
-        const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-6935bede/weight`, {
-          headers: {
-            Authorization: `Bearer ${publicAnonKey}`
-          }
-        });
-        if (response.ok) {
-          const data = await response.json();
-          if (data.weight) {
-            setWeight(data.weight.toString());
-          }
-        }
-      } catch (error) {
-        console.error("Failed to fetch weight:", error);
-      }
-    };
-    fetchWeight();
   }, []);
 
-  const handleSave = async () => {
+  const handleSave = () => {
     setIsSaving(true);
-    try {
-      await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-6935bede/weight`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${publicAnonKey}`
-        },
-        body: JSON.stringify({ weight: parseFloat(weight) })
-      });
-      alert("Profile updated successfully!");
-    } catch (error) {
-      console.error("Failed to update weight:", error);
-      alert("Failed to update profile.");
-    } finally {
+    setTimeout(() => {
+      updateUser(draft);
       setIsSaving(false);
-    }
+      alert("Profile updated successfully!");
+    }, 300);
   };
 
   const toggleTheme = () => {
@@ -88,7 +67,7 @@ export default function Profile() {
   return (
     <div className="p-8 dark:bg-black min-h-screen">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-zinc-900 dark:text-white mb-2">Profile</h1>
+        <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-500 to-indigo-600 bg-clip-text text-transparent mb-2">Profile</h1>
         <p className="text-zinc-600 dark:text-zinc-400">Manage your account and preferences</p>
       </div>
 
@@ -96,18 +75,14 @@ export default function Profile() {
         {/* Profile Card */}
         <Card className="lg:col-span-1 p-6 dark:bg-[#121212] dark:border-zinc-800">
           <div className="flex flex-col items-center text-center">
-            <div className="w-24 h-24 rounded-full bg-black dark:bg-white flex items-center justify-center text-white dark:text-black text-3xl font-bold mb-4 border border-zinc-200 dark:border-zinc-800">
-              JD
+            <div className="w-24 h-24 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-3xl font-bold mb-4 shadow-lg">
+              {user.firstName.charAt(0)}{user.lastName.charAt(0)}
             </div>
-            <h2 className="text-xl font-bold text-zinc-900 dark:text-white mb-1">John Doe</h2>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-4">john.doe@email.com</p>
+            <h2 className="text-xl font-bold bg-gradient-to-r from-blue-500 to-indigo-600 bg-clip-text text-transparent mb-1">{user.firstName} {user.lastName}</h2>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-4">{user.email}</p>
             <Badge className="mb-6 bg-black dark:bg-white text-white dark:text-black border border-zinc-200 dark:border-zinc-800">
               {isTrial ? "Free Trial" : `${planType} Plan`}
             </Badge>
-            <Button variant="outline" className="w-full dark:text-zinc-200 dark:border-zinc-700 dark:hover:bg-zinc-800">
-              <Settings className="w-4 h-4 mr-2" />
-              Edit Profile
-            </Button>
           </div>
 
           <div className="mt-6 pt-6 border-t border-zinc-200 dark:border-zinc-800 space-y-3">
@@ -140,11 +115,11 @@ export default function Profile() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label htmlFor="firstName" className="dark:text-zinc-300">First Name</Label>
-                      <Input id="firstName" defaultValue="John" className="dark:bg-black dark:border-zinc-800 dark:text-white" />
+                      <Input id="firstName" value={draft.firstName} onChange={setField("firstName")} className="dark:bg-black dark:border-zinc-800 dark:text-white" />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="lastName" className="dark:text-zinc-300">Last Name</Label>
-                      <Input id="lastName" defaultValue="Doe" className="dark:bg-black dark:border-zinc-800 dark:text-white" />
+                      <Input id="lastName" value={draft.lastName} onChange={setField("lastName")} className="dark:bg-black dark:border-zinc-800 dark:text-white" />
                     </div>
                   </div>
 
@@ -152,7 +127,7 @@ export default function Profile() {
                     <Label htmlFor="email" className="dark:text-zinc-300">Email</Label>
                     <div className="relative">
                       <Mail className="absolute left-3 top-3 w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-                      <Input id="email" className="pl-10 dark:bg-black dark:border-zinc-800 dark:text-white" defaultValue="john.doe@email.com" type="email" />
+                      <Input id="email" className="pl-10 dark:bg-black dark:border-zinc-800 dark:text-white" value={draft.email} onChange={setField("email")} type="email" />
                     </div>
                   </div>
 
@@ -160,7 +135,7 @@ export default function Profile() {
                     <Label htmlFor="phone" className="dark:text-zinc-300">Phone</Label>
                     <div className="relative">
                       <Phone className="absolute left-3 top-3 w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-                      <Input id="phone" className="pl-10 dark:bg-black dark:border-zinc-800 dark:text-white" defaultValue="+1 (555) 123-4567" type="tel" />
+                      <Input id="phone" className="pl-10 dark:bg-black dark:border-zinc-800 dark:text-white" value={draft.phone} onChange={setField("phone")} type="tel" />
                     </div>
                   </div>
 
@@ -168,33 +143,17 @@ export default function Profile() {
                     <Label htmlFor="address" className="dark:text-zinc-300">Address</Label>
                     <div className="relative">
                       <MapPin className="absolute left-3 top-3 w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-                      <Input id="address" className="pl-10 dark:bg-black dark:border-zinc-800 dark:text-white" defaultValue="123 Fitness Street, Gym City, GC 12345" />
+                      <Input id="address" className="pl-10 dark:bg-black dark:border-zinc-800 dark:text-white" value={draft.address} onChange={setField("address")} />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="age" className="dark:text-zinc-300">Age</Label>
-                      <Input id="age" defaultValue="28" type="number" className="dark:bg-black dark:border-zinc-800 dark:text-white" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="height" className="dark:text-zinc-300">Height (cm)</Label>
-                      <Input id="height" defaultValue="180" type="number" className="dark:bg-black dark:border-zinc-800 dark:text-white" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="weight" className="dark:text-zinc-300">Weight (lbs)</Label>
-                      <Input 
-                        id="weight" 
-                        value={weight} 
-                        onChange={(e) => setWeight(e.target.value)}
-                        type="number" 
-                        className="dark:bg-black dark:border-zinc-800 dark:text-white"
-                      />
-                    </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="age" className="dark:text-zinc-300">Age</Label>
+                    <Input id="age" value={draft.age} onChange={setField("age")} type="number" className="dark:bg-black dark:border-zinc-800 dark:text-white" />
                   </div>
 
                   <div className="pt-4">
-                    <Button onClick={handleSave} disabled={isSaving} className="dark:bg-white dark:text-black dark:hover:bg-zinc-200">
+                    <Button onClick={handleSave} disabled={!hasChanges || isSaving} className="dark:bg-white dark:text-black dark:hover:bg-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed">
                       {isSaving ? "Saving..." : "Save Changes"}
                     </Button>
                   </div>

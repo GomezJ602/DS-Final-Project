@@ -4,9 +4,10 @@ import { Badge } from "./ui/badge";
 import { Calendar, Clock, Users, MapPin, Navigation } from "lucide-react";
 import { ImageWithFallback } from "./common/ImageWithFallback";
 import { useState, useEffect } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 export default function Classes() {
+  const navigate = useNavigate();
   const [userLocation, setUserLocation] = useState<{city: string, state: string} | null>(null);
   const [isLocating, setIsLocating] = useState(true);
 
@@ -246,7 +247,7 @@ export default function Classes() {
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 mb-3 group-hover:scale-110 transition-transform">
               <Users className="w-6 h-6" />
             </div>
-            <p className="text-2xl font-bold text-zinc-900 dark:text-white mb-1">12</p>
+            <p className="text-2xl font-bold text-zinc-900 dark:text-white mb-1">20</p>
             <p className="text-sm text-zinc-600 dark:text-zinc-400 flex items-center justify-center gap-1">
               Expert Instructors <span className="text-purple-500 opacity-0 group-hover:opacity-100 transition-opacity">→</span>
             </p>
@@ -316,9 +317,15 @@ export default function Classes() {
                 </div>
               </div>
 
-              <Button 
-                className="w-full mt-auto dark:bg-white dark:text-black dark:hover:bg-zinc-200" 
+              <Button
+                className="w-full mt-auto dark:bg-white dark:text-black dark:hover:bg-zinc-200"
                 disabled={classItem.spots === 0}
+                onClick={() =>
+                  classItem.spots > 0 &&
+                  navigate(
+                    `/instructors?classId=${classItem.id}&className=${encodeURIComponent(classItem.name)}&classType=${encodeURIComponent(classItem.type)}`
+                  )
+                }
               >
                 {classItem.spots === 0 ? "Class Full" : "Book Class"}
               </Button>

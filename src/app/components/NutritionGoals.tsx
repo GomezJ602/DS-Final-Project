@@ -9,6 +9,7 @@ import {
   format, addDays, addWeeks, addMonths,
   startOfWeek, startOfMonth, isSameDay, isSameMonth,
 } from 'date-fns';
+import { BrowserMultiFormatReader, type IScannerControls } from '@zxing/browser';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 
 const CALORIE_GOAL = 2500;
@@ -118,12 +119,22 @@ export default function NutritionGoals() {
 
   // ── Scanner ───────────────────────────────────────────
   const [scannerOpen, setScannerOpen] = useState(false);
-  const [scanPhase, setScanPhase] = useState<'camera' | 'searching' | 'result' | 'manual' | 'error'>('camera');
+  const [scanPhase, setScanPhase] = useState<'camera' | 'searching' | 'result' | 'manual' | 'error' | 'not-found' | 'add-product'>('camera');
   const [scanResult, setScanResult] = useState<ScannedProduct | null>(null);
   const [scanError, setScanError] = useState('');
   const [manualUPC, setManualUPC] = useState('');
   const [hasBarcodeDetector, setHasBarcodeDetector] = useState(false);
   const [cameraPermission, setCameraPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
+  const [cameraOn, setCameraOn] = useState(false);
+
+  // ── UPC local database ────────────────────────────────
+  const [upcCache, setUpcCache] = useState<Record<string, ScannedProduct>>({});
+  const [notFoundUPC, setNotFoundUPC] = useState('');
+  const [newProductForm, setNewProductForm] = useState({
+    name: '', brand: '', servingSize: '1 serving',
+    calories: '', protein: '', carbs: '', fats: '',
+  });
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
 
   // ── Custom foods ─────────────────────────────────────
   const [customFoods, setCustomFoods] = useState<CustomFood[]>([]);
@@ -138,6 +149,7 @@ export default function NutritionGoals() {
   const detectorRef = useRef<any>(null);
   const animFrameRef = useRef<number>(0);
   const scanningRef = useRef(false);
+  const zxingControlsRef = useRef<IScannerControls | null>(null);
 
   // ── Effects ───────────────────────────────────────────
   useEffect(() => {
@@ -145,8 +157,26 @@ export default function NutritionGoals() {
       const stored = localStorage.getItem('ironcore_nutrition_v2');
       if (stored) setDayLogs(JSON.parse(stored));
     } catch (e) {}
-    setHasBarcodeDetector('BarcodeDetector' in window);
+    try {
+      const cached = localStorage.getItem('ironcore_upc_cache');
+      if (cached) setUpcCache(JSON.parse(cached));
+    } catch (e) {}
+    // Native BarcodeDetector isn't available on some platforms (notably Chrome on Windows).
+    // We use a ZXing fallback, so scanning can still work.
+    setHasBarcodeDetector(true);
     loadCustomFoods();
+    fetch('http://localhost:8080/api/upc/all')
+      .then(r => r.json())
+      .then((products: ScannedProduct[]) => {
+        if (Array.isArray(products)) {
+          setUpcCache(prev => {
+            const merged = { ...prev };
+            products.forEach((p: ScannedProduct) => { if (p.upc) merged[p.upc] = p; });
+            return merged;
+          });
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -156,7 +186,7 @@ export default function NutritionGoals() {
     } catch (e) {}
   }, [selectedDate]);
 
-  // Cleanup camera when modal closes
+  // Auto-start camera when modal opens; cleanup when it closes
   useEffect(() => {
     if (!scannerOpen) {
       stopCamera();
@@ -164,37 +194,66 @@ export default function NutritionGoals() {
       setScanResult(null);
       setScanError('');
       setManualUPC('');
+      setCameraPermission('unknown');
+      setCameraOn(false);
+    } else {
+      const timer = setTimeout(() => startScanner(), 150);
+      return () => clearTimeout(timer);
     }
   }, [scannerOpen]);
-
-  // Auto-start camera scan when modal opens
-  useEffect(() => {
-    if (scannerOpen && hasBarcodeDetector && scanPhase === 'camera') {
-      startScanner();
-    }
-  }, [scannerOpen, hasBarcodeDetector]);
 
   // ── Scanner functions ─────────────────────────────────
   async function startScanner() {
     try {
+      setScanError('');
+      if (!window.isSecureContext) {
+        setScanError('Camera requires a secure context. Open the app at http://localhost:5173 (not your IP address).');
+        setScanPhase('manual');
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        // On desktop webcams, strict facingMode can fail. Keep it as "ideal".
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
       });
       setCameraPermission('granted');
       streamRef.current = stream;
+      setCameraOn(true);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-      detectorRef.current = new (window as any).BarcodeDetector({
-        formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39'],
-      });
-      scanningRef.current = true;
-      scanTick();
+      if ('BarcodeDetector' in window) {
+        detectorRef.current = new (window as any).BarcodeDetector({
+          formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39'],
+        });
+        scanningRef.current = true;
+        scanTick();
+      } else {
+        // Fallback scanner for platforms without BarcodeDetector (e.g. Chrome on Windows).
+        scanningRef.current = true;
+        const reader = new BrowserMultiFormatReader();
+        const controls = await reader.decodeFromVideoElement(videoRef.current!, (result, err) => {
+          if (result && scanningRef.current) {
+            const text = result.getText();
+            // Stop scanning ASAP; lookup + UI work happens after.
+            try { zxingControlsRef.current?.stop(); } catch {}
+            zxingControlsRef.current = null;
+            stopCamera();
+            void lookupUPC(text);
+            return;
+          }
+          // Ignore NotFound-style errors; scanner runs continuously.
+          void err;
+        });
+        zxingControlsRef.current = controls;
+      }
     } catch (e: any) {
+      setCameraOn(false);
       if (e.name === 'NotAllowedError') {
         setCameraPermission('denied');
       }
+      const msg = e?.message ? ` (${e.message})` : '';
+      setScanError(`Camera error: ${e?.name || 'UnknownError'}${msg}`);
       setScanPhase('manual');
     }
   }
@@ -202,11 +261,14 @@ export default function NutritionGoals() {
   function stopCamera() {
     scanningRef.current = false;
     cancelAnimationFrame(animFrameRef.current);
+    try { zxingControlsRef.current?.stop(); } catch {}
+    zxingControlsRef.current = null;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
     if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraOn(false);
   }
 
   async function scanTick() {
@@ -230,39 +292,105 @@ export default function NutritionGoals() {
 
   async function lookupUPC(upc: string) {
     setScanPhase('searching');
+
+    // 1. Check local cache
+    if (upcCache[upc]) {
+      setScanResult(upcCache[upc]);
+      setScanPhase('result');
+      return;
+    }
+
+    // 2. Check Java backend
+    try {
+      const backendRes = await fetch(`http://localhost:8080/api/upc/lookup?upc=${encodeURIComponent(upc)}`);
+      if (backendRes.ok) {
+        const product: ScannedProduct = await backendRes.json();
+        if (product && product.name) {
+          const newCache = { ...upcCache, [upc]: product };
+          setUpcCache(newCache);
+          localStorage.setItem('ironcore_upc_cache', JSON.stringify(newCache));
+          setScanResult(product);
+          setScanPhase('result');
+          return;
+        }
+      }
+    } catch (e) {}
+
+    // 3. Check OpenFoodFacts (3M+ real products)
     try {
       const res = await fetch(`https://world.openfoodfacts.org/api/v0/product/${upc}.json`);
       const data = await res.json();
-      if (data.status !== 1 || !data.product) {
-        setScanError(`No product found for barcode "${upc}". Try entering it manually.`);
-        setScanPhase('error');
+      if (data.status === 1 && data.product) {
+        const p = data.product;
+        const n = p.nutriments || {};
+        let factor = 1;
+        if (p.serving_size) {
+          const m = (p.serving_size as string).match(/(\d+(?:\.\d+)?)\s*g/);
+          if (m) factor = parseFloat(m[1]) / 100;
+        }
+        const product: ScannedProduct = {
+          name: p.product_name_en || p.product_name || `Product (${upc})`,
+          upc,
+          calories: Math.round((n['energy-kcal_100g'] || n['energy-kcal'] || 0) * factor),
+          macros: {
+            protein: Math.round((n['proteins_100g'] || 0) * factor),
+            carbs: Math.round((n['carbohydrates_100g'] || 0) * factor),
+            fats: Math.round((n['fat_100g'] || 0) * factor),
+          },
+          servingSize: p.serving_size || '100g',
+          brand: p.brands,
+          image: p.image_front_small_url,
+        };
+        const newCache = { ...upcCache, [upc]: product };
+        setUpcCache(newCache);
+        localStorage.setItem('ironcore_upc_cache', JSON.stringify(newCache));
+        try {
+          await fetch('http://localhost:8080/api/upc/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(product),
+          });
+        } catch (e) {}
+        setScanResult(product);
+        setScanPhase('result');
         return;
       }
-      const p = data.product;
-      const n = p.nutriments || {};
-      let factor = 1;
-      if (p.serving_size) {
-        const m = (p.serving_size as string).match(/(\d+(?:\.\d+)?)\s*g/);
-        if (m) factor = parseFloat(m[1]) / 100;
-      }
-      setScanResult({
-        name: p.product_name_en || p.product_name || `Product (${upc})`,
-        upc,
-        calories: Math.round((n['energy-kcal_100g'] || n['energy-kcal'] || 0) * factor),
-        macros: {
-          protein: Math.round((n['proteins_100g'] || 0) * factor),
-          carbs: Math.round((n['carbohydrates_100g'] || 0) * factor),
-          fats: Math.round((n['fat_100g'] || 0) * factor),
-        },
-        servingSize: p.serving_size || '100g',
-        brand: p.brands,
-        image: p.image_front_small_url,
+    } catch (e) {}
+
+    // 4. Not found anywhere — prompt user to add
+    setNotFoundUPC(upc);
+    setScanPhase('not-found');
+  }
+
+  async function saveNewProduct() {
+    if (!newProductForm.name.trim() || !newProductForm.calories) return;
+    setIsSavingProduct(true);
+    const product: ScannedProduct = {
+      upc: notFoundUPC,
+      name: newProductForm.name.trim(),
+      brand: newProductForm.brand.trim() || undefined,
+      servingSize: newProductForm.servingSize.trim() || '1 serving',
+      calories: Number(newProductForm.calories) || 0,
+      macros: {
+        protein: Number(newProductForm.protein) || 0,
+        carbs: Number(newProductForm.carbs) || 0,
+        fats: Number(newProductForm.fats) || 0,
+      },
+    };
+    try {
+      await fetch('http://localhost:8080/api/upc/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(product),
       });
-      setScanPhase('result');
-    } catch (e) {
-      setScanError('Network error. Check your connection and try again.');
-      setScanPhase('error');
-    }
+    } catch (e) {}
+    const newCache = { ...upcCache, [notFoundUPC]: product };
+    setUpcCache(newCache);
+    localStorage.setItem('ironcore_upc_cache', JSON.stringify(newCache));
+    setScanResult(product);
+    setScanPhase('result');
+    setIsSavingProduct(false);
+    setNewProductForm({ name: '', brand: '', servingSize: '1 serving', calories: '', protein: '', carbs: '', fats: '' });
   }
 
   // ── Food log functions ────────────────────────────────
@@ -282,6 +410,25 @@ export default function NutritionGoals() {
     });
   }
 
+  async function saveUPCScanToDb(scan: ScannedProduct) {
+    // Best-effort only; the app should still work if Supabase is not configured.
+    try {
+      await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-6935bede/upc-scans`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${publicAnonKey}`,
+        },
+        body: JSON.stringify({
+          upc: scan.upc,
+          name: scan.name,
+        }),
+      });
+    } catch (e) {
+      // Intentionally ignore: this is a project feature and should not block UX.
+    }
+  }
+
   function removeFoodFromLog(itemId: string) {
     const key = dateKey(selectedDate);
     setDayLogs(prev => {
@@ -291,8 +438,9 @@ export default function NutritionGoals() {
     });
   }
 
-  function confirmAddScanned() {
+  async function confirmAddScanned() {
     if (scanResult) {
+      await saveUPCScanToDb(scanResult);
       addFoodToLog(scanResult);
       setScannerOpen(false);
     }
@@ -1076,20 +1224,29 @@ export default function NutritionGoals() {
               {/* Modal header */}
               <div className="flex justify-between items-center mb-5">
                 <h3 className="text-xl font-bold text-zinc-900 dark:text-white">
-                  {scanPhase === 'result' ? 'Product Found' : scanPhase === 'searching' ? 'Looking Up...' : 'Scan Barcode'}
+                  {scanPhase === 'result' ? 'Product Found'
+                    : scanPhase === 'searching' ? 'Looking Up...'
+                    : scanPhase === 'not-found' ? 'Product Not Found'
+                    : scanPhase === 'add-product' ? 'Add New Product'
+                    : 'Scan Barcode'}
                 </h3>
                 <button onClick={() => setScannerOpen(false)} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200">
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              {/* Live camera feed */}
-              {(scanPhase === 'camera' || scanPhase === 'searching') && hasBarcodeDetector && (
-                <div className="relative rounded-xl overflow-hidden bg-black mb-4" style={{ aspectRatio: '4/3' }}>
-                  <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
-                  {/* Viewfinder */}
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="relative w-56 h-36">
+                {/* Live camera feed */}
+                {(scanPhase === 'camera' || scanPhase === 'searching') && hasBarcodeDetector && (
+                  <div className="relative rounded-xl overflow-hidden bg-black mb-4" style={{ aspectRatio: '4/3' }}>
+                    <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
+                    {!cameraOn && scanPhase === 'camera' && (
+                      <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+                        <p className="text-white text-sm font-medium">Starting camera...</p>
+                      </div>
+                    )}
+                    {/* Viewfinder */}
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="relative w-56 h-36">
                       <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-white rounded-tl-sm" />
                       <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-white rounded-tr-sm" />
                       <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-white rounded-bl-sm" />
@@ -1106,8 +1263,17 @@ export default function NutritionGoals() {
                         <Loader2 className="w-8 h-8 text-white animate-spin mx-auto mb-2" />
                         <p className="text-white text-sm font-medium">Looking up product...</p>
                       </div>
-                    </div>
-                  )}
+                  </div>
+                )}
+
+                {scanPhase === 'camera' && hasBarcodeDetector && !cameraOn && cameraPermission !== 'denied' && (
+                  <button
+                    onClick={startScanner}
+                    className="w-full mb-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Camera className="w-4 h-4" />Retry camera
+                  </button>
+                )}
                 </div>
               )}
 
@@ -1139,11 +1305,11 @@ export default function NutritionGoals() {
               {/* Manual UPC entry */}
               {(scanPhase === 'camera' && !hasBarcodeDetector) || scanPhase === 'manual' || scanPhase === 'error' ? (
                 <div className="mb-4">
-                  {scanPhase === 'error' && (
+                    {scanError && (scanPhase === 'manual' || scanPhase === 'error') && (
                     <div className="mb-3 p-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800/50 rounded-xl text-sm text-red-600 dark:text-red-400">
                       {scanError}
                     </div>
-                  )}
+                    )}
                   <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300 block mb-2">
                     Enter UPC / barcode number
                   </label>
@@ -1227,6 +1393,138 @@ export default function NutritionGoals() {
                       className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
                     >
                       <CheckCircle2 className="w-4 h-4" />Add to Log
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Not-found phase */}
+              {scanPhase === 'not-found' && (
+                <div>
+                  <div className="text-center py-4 mb-4">
+                    <div className="w-14 h-14 rounded-full bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center mx-auto mb-3 border border-amber-200 dark:border-amber-800">
+                      <ScanBarcode className="w-7 h-7 text-amber-500" />
+                    </div>
+                    <h4 className="font-bold text-zinc-900 dark:text-white text-base mb-1">Product Not in Database</h4>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      No match for barcode <span className="font-mono text-zinc-700 dark:text-zinc-300">{notFoundUPC}</span>.
+                    </p>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">Would you like to add it?</p>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => { setScanPhase('camera'); setTimeout(() => startScanner(), 50); }}
+                      className="flex-1 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-sm font-medium transition-colors"
+                    >
+                      Scan Again
+                    </button>
+                    <button
+                      onClick={() => {
+                        setNewProductForm({ name: '', brand: '', servingSize: '1 serving', calories: '', protein: '', carbs: '', fats: '' });
+                        setScanPhase('add-product');
+                      }}
+                      className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                    >
+                      <Plus className="w-4 h-4" />Add Product
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Add-product phase */}
+              {scanPhase === 'add-product' && (
+                <div>
+                  <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800/50 rounded-xl">
+                    <p className="text-xs text-blue-700 dark:text-blue-400 font-medium">
+                      UPC: <span className="font-mono">{notFoundUPC}</span>
+                    </p>
+                  </div>
+                  <div className="space-y-3 mb-4">
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
+                        Product Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Lay's Classic Chips"
+                        value={newProductForm.name}
+                        onChange={e => setNewProductForm(prev => ({ ...prev, name: e.target.value }))}
+                        className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-sm dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        autoFocus
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Brand</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Frito-Lay"
+                          value={newProductForm.brand}
+                          onChange={e => setNewProductForm(prev => ({ ...prev, brand: e.target.value }))}
+                          className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-sm dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Serving Size</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 1 oz (28g)"
+                          value={newProductForm.servingSize}
+                          onChange={e => setNewProductForm(prev => ({ ...prev, servingSize: e.target.value }))}
+                          className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-sm dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
+                        Calories (kcal) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="e.g. 150"
+                        value={newProductForm.calories}
+                        onChange={e => setNewProductForm(prev => ({ ...prev, calories: e.target.value }))}
+                        className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-sm dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      {([
+                        { key: 'protein', label: 'Protein (g)' },
+                        { key: 'carbs', label: 'Carbs (g)' },
+                        { key: 'fats', label: 'Fat (g)' },
+                      ] as const).map(f => (
+                        <div key={f.key}>
+                          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">{f.label}</label>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder="0"
+                            value={newProductForm[f.key]}
+                            onChange={e => setNewProductForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                            className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-sm dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setScanPhase('not-found')}
+                      className="flex-1 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-sm font-medium transition-colors"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={saveNewProduct}
+                      disabled={isSavingProduct || !newProductForm.name.trim() || !newProductForm.calories}
+                      className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                    >
+                      {isSavingProduct ? (
+                        <><Loader2 className="w-4 h-4 animate-spin" />Saving...</>
+                      ) : (
+                        <><CheckCircle2 className="w-4 h-4" />Save & Add to Log</>
+                      )}
                     </button>
                   </div>
                 </div>
